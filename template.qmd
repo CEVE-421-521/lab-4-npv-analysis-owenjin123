@@ -1,6 +1,6 @@
 ---
 title: "Lab 4: House Elevation NPV Analysis"
-author: "Your Name"
+author: "Owen Jin"
 jupyter: julia-1.10
 date: 2024-02-08
 week: 5
@@ -50,3 +50,88 @@ Plots.default(; margin=6Plots.mm)
 include("depthdamage.jl")
 ```
 
+```{julia}
+haz_fl_dept = CSV.read("data/haz_fl_dept.csv", DataFrame) # read in the file
+desc = "one story, Contents, fresh water, short duration"
+row = @rsubset(haz_fl_dept, :Description == desc)[1, :] # select the row I want
+dd = DepthDamageData(row) # extract the depth-damage data
+damage_fn = get_depth_damage_function(dd.depths, dd.damages) # get the depth-damage function
+
+gauge_dist = GeneralizedExtremeValue(5, 1, 0.1) # hypothetical gauge distribution
+offset = 7.5 # hypothetical height from house to gauge
+flood_dist = GeneralizedExtremeValue(gauge_dist.μ - offset, gauge_dist.σ, gauge_dist.ξ)
+
+function single_year_cost_benefit(flood_dist, damage_fn, elevation_cost, house_area, house_value, Δh)
+    
+    # calculate the expected damages
+    samples = rand(flood_dist, 100_000) .* 1u"ft"
+    expected_damages_pct = mean(damage_fn.(samples))
+    c_dmg = house_value * expected_damages_pct / 100
+
+    # calculate the cost of elevating
+    c_constr = elevation_cost
+
+    # return the total cost and benefit
+    return -c_constr - c_dmg
+end
+
+house_value = 250_000
+house_area = 1000u"ft^2"
+Δh = 5u"ft"
+elevation_cost = get_elevation_cost_function()(Δh, house_area)
+single_year_cost_benefit(flood_dist, damage_fn, elevation_cost, house_area, house_value, Δh)
+
+```
+
+```{julia}
+function npv_cost_benefit(flood_dist, damage_fn, elevation_cost, house_area, house_value, Δh, T, discount_rate)
+    # calculate the costs and benefits for each year, and then discount
+    npv = 0
+    for t in 1:T
+        if t == 1
+            cost_benefit = single_year_cost_benefit(flood_dist, damage_fn, elevation_cost, house_area, house_value, Δh)
+        else
+            cost_benefit = single_year_cost_benefit(flood_dist, damage_fn, elevation_cost, house_area, house_value, 0u"ft")
+        end
+        
+        discounted_cashflow = cost_benefit * (1 - discount_rate)^(t - 1)
+        
+        npv += discounted_cashflow
+    end
+    return npv
+end
+
+T=10
+discount_rate = 0.05
+npv_cost_benefit(flood_dist, damage_fn, elevation_cost, house_area, house_value, Δh, T, discount_rate)
+```
+
+```{julia}
+using Random
+
+function monte_carlo_npv_estimate(flood_dist, damage_fn, elevation_cost, house_area, house_value, Δh, T, num_iterations)
+    # Define the parameters for the normal distribution of discount rates
+    mean_discount_rate = .04
+    std_discount_rate = .02
+    
+    # Initialize an array to store NPVs for each iteration
+    npvs = zeros(num_iterations)
+    discount_rates = rand(Normal(mean_discount_rate, std_discount_rate), num_iterations)
+    
+    # Calculate NPV for each discount rate
+    for i in 1:num_iterations
+        npvs[i] = npv_cost_benefit(flood_dist, damage_fn, elevation_cost, house_area, house_value, Δh, T, discount_rates[i])
+    end
+    
+    # Compute the average NPV
+    expected_npv = mean(npvs)
+    
+    return expected_npv
+end
+
+num_iterations = 100  # Adjust the number of iterations as needed
+
+expected_npv = monte_carlo_npv_estimate(flood_dist, damage_fn, elevation_cost, house_area, house_value, Δh, T, num_iterations)
+expected_npv 
+
+```
